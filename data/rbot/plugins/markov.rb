@@ -168,6 +168,21 @@ class MarkovPlugin < Plugin
     end
   end
 
+  def forget(m, params)
+    input = clean_str(params[:input].to_s).downcase
+    key = input.split(/ /)[0,2].join(" ")
+
+    if @chains.key?(key) == false
+      m.reply("I don't have any chains that start with '#{key}'")
+      return
+    end
+
+    @chains_mutex.synchronize do
+      @chains.delete(key)
+    end
+    m.okay
+  end
+
   def upgrade_registry
     # we load all the keys and then iterate over this array because
     # running each() on the registry and updating it at the same time
@@ -743,8 +758,10 @@ plugin.map 'markov learn from :file [:testing [:lines lines]] [using pattern *pa
            :requirements => {
              :testing => /^testing$/,
              :lines   => /^(?:\d+\.\.\d+|\d+)$/ }
+plugin.map 'markov forget *input', :action => "forget", :auth_path => '!markov::forget!'
 
 plugin.default_auth('ignore', false)
 plugin.default_auth('probability', false)
 plugin.default_auth('learn', false)
+plugin.default_auth('forget', false)
 

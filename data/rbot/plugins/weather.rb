@@ -81,6 +81,28 @@ class WeatherPlugin < Plugin
     :desc => "Units to be used by default in Weather Underground reports")
 
 
+  Config.register Config::EnumValue.new('weather.reply_type',
+    :values => ['public', 'private', 'notice', 'private notice'], :default => 'public',
+    :desc => "Which method the bot should use to reply with weather info")
+
+  def communicate(m, msg)
+    case @bot.config['weather.reply_type'].intern
+    when :private
+      m.reply msg, :to => :private
+    when :notice
+      if m.private?
+        m.notify msg
+      else
+        @bot.notice m.channel, msg
+      end
+    when :"private notice"
+      m.notify msg
+    else
+      # Handle :public and unsupported values
+      m.reply msg
+    end
+  end
+
   def help(plugin, topic="")
     case topic
     when "nws"
@@ -102,21 +124,24 @@ class WeatherPlugin < Plugin
   end
 
   def weather(m, params)
-    where = params[:where].to_s
-    service = params[:service].to_sym rescue nil
-    units = params[:units]
+    if params[:where].empty?
+      if @registry.has_key?(m.sourcenick)
+        where = @registry[m.sourcenick]
+        debug "Loaded weather info #{where.inspect} for #{m.sourcenick}"
 
-    if where.empty? or !service or !units and @registry.has_key?(m.sourcenick)
-      reg = @registry[m.sourcenick]
-      debug "loaded weather info #{reg.inspect} for #{m.sourcenick}"
-      service = reg.first.to_sym if !service
-      where = reg[1].to_s if where.empty?
-      units = reg[2] rescue nil
-    end
-
-    if !service
-      if where.sub!(/^station\s+/,'')
-        service = :nws
+        service = where.first.to_sym
+        loc = where[1].to_s
+        units = params[:units] || where[2] rescue nil
+      else
+        debug "No weather info for #{m.sourcenick}"
+        communicate m, "I don't know where you are yet, #{m.sourcenick}. See 'help weather nws' or 'help weather wu' for additional help"
+        return
+      end
+    else
+      where = params[:where]
+      if ['nws','station'].include?(where.first)
+        service = where.first.to_sym
+        loc = where[1].to_s
       else
         service = :wu
       end
@@ -124,18 +149,20 @@ class WeatherPlugin < Plugin
 
     if where.empty?
       debug "No weather location found for #{m.sourcenick}"
-      m.reply "I don't know where you are yet, #{m.sourcenick}. See 'help weather nws' or 'help weather wu' for additional help"
+      communicate m, "I don't know where you are yet, #{m.sourcenick}. See 'help weather nws' or 'help weather wu' for additional help"
       return
     end
 
     wu_units = String.new
-
-    case (units || @bot.config['weather.units']).to_sym
-    when :english, :metric
-      wu_units = "_#{units}"
-    when :both
-    else
-      m.reply "Ignoring unknown units #{units}"
+    if units
+      case units.to_sym
+      when :english, :metric
+        wu_units = "_#{units}"
+      when :both
+      else
+        communicate m, "Ignoring unknown units #{units}"
+        wu_units = String.new
+      end
     end
 
     case service
@@ -163,16 +190,16 @@ class WeatherPlugin < Plugin
     end
     if met
       begin
-        m.reply met.update
+        communicate m, met.update
         @nws_cache[where] = met
       rescue Net::HTTPError => e
         m.reply _("%{error}, will try WU service") % { :error => e.message }
         wu_weather(m, where)
       rescue => e
-        m.reply e.message
+        communicate m, e.message
       end
     else
-      m.reply "couldn't find weather data for #{where}"
+      communicate m, "couldn't find weather data for #{where}"
     end
   end
 
@@ -181,21 +208,21 @@ class WeatherPlugin < Plugin
       xml = @bot.httputil.get(@wu_station_url % [units, CGI.escape(where)])
       case xml
       when nil
-        m.reply "couldn't retrieve weather information, sorry"
+        communicate m, "couldn't retrieve weather information, sorry"
         return
       when /Search not found:/
-        m.reply "no such station found (#{where})"
+        communicate m, "no such station found (#{where})"
         return
       when /<table border.*?>(.*?)<\/table>/m
         data = $1.dup
-        m.reply wu_weather_filter(data)
+        communicate m, wu_weather_filter(data)
         wu_out_special(m, xml)
       else
         debug xml
-        m.reply "something went wrong with the data for #{where}..."
+        communicate m, "something went wrong with the data for #{where}..."
       end
     rescue => e
-      m.reply "retrieving info about '#{where}' failed (#{e})"
+      communicate m, "retrieving info about '#{where}' failed (#{e})"
     end
   end
 
@@ -204,28 +231,28 @@ class WeatherPlugin < Plugin
       xml = @bot.httputil.get(@wu_url % [units, CGI.escape(where)])
       case xml
       when nil
-        m.reply "couldn't retrieve weather information, sorry"
+        communicate m, "couldn't retrieve weather information, sorry"
       when /City Not Found/
-        m.reply "no such location found (#{where})"
+        communicate m, "no such location found (#{where})"
       when /Current<\/a>/
         data = ""
         xml.scan(/<table border.*?>(.*?)<\/table>/m).each do |match|
           data += wu_weather_filter(match.first)
         end
         if data.length > 0
-          m.reply data
+          communicate m, data
         else
-          m.reply "couldn't parse weather data from #{where}"
+          communicate m, "couldn't parse weather data from #{where}"
         end
         wu_out_special(m, xml)
       when /<a href="\/auto\/mobile[^\/]+\/(?:global\/stations|[A-Z][A-Z])\//
         wu_weather_multi(m, xml)
       else
         debug xml
-        m.reply "something went wrong with the data from #{where}..."
+        communicate m, "something went wrong with the data from #{where}..."
       end
     rescue => e
-      m.reply "retrieving info about '#{where}' failed (#{e})"
+      communicate m, "retrieving info about '#{where}' failed (#{e})"
     end
   end
 
@@ -233,7 +260,7 @@ class WeatherPlugin < Plugin
     # debug xml
     stations = xml.scan(/<td>\s*(?:<a href="([^?"]+\?feature=[^"]+)"\s*[^>]*><img [^>]+><\/a>\s*)?<a href="\/auto\/mobile[^\/]+\/(?:global\/stations|([A-Z][A-Z]))\/([^"]*?)\.html">(.*?)<\/a>\s*:\s*(.*?)<\/td>/m)
     # debug stations
-    m.reply "multiple stations available, use 'weather station <code>' or 'weather <city, state>' as appropriate, for one of the following (current temp shown):"
+    communicate m, "multiple stations available, use 'weather station <code>' or 'weather <city, state>' as appropriate, for one of the following (current temp shown):"
     stations.map! { |ar|
       warning = ar[0]
       loc = ar[2]
@@ -246,7 +273,7 @@ class WeatherPlugin < Plugin
         (warning ? "*" : "") + ("station %s (%s): %s" % [loc, par, w.ircify_html])
       end
     }
-    m.reply stations.join("; ")
+    communicate m, stations.join("; ")
   end
 
   def wu_check_special(xml)
@@ -275,9 +302,9 @@ class WeatherPlugin < Plugin
     specials.each do |special|
       special.merge!(:underline => Underline)
       if special[:text]
-        m.reply("%{underline}%{special}%{underline}: %{text}" % special)
+        communicate m, ("%{underline}%{special}%{underline}: %{text}" % special)
       else
-        m.reply("%{underline}%{special}%{underline} @ %{url}" % special)
+        communicate m, ("%{underline}%{special}%{underline} @ %{url}" % special)
       end
     end
   end

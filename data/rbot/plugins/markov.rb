@@ -239,6 +239,7 @@ class MarkovPlugin < Plugin
     end
   end
 
+
   def upgrade_registry
     # we load all the keys and then iterate over this array because
     # running each() on the registry and updating it at the same time

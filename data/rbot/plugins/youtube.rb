@@ -23,6 +23,9 @@ class YouTubePlugin < Plugin
   Config.register Config::BooleanValue.new('youtube.formats',
     :default => true,
     :desc => "Should the bot display alternative URLs (swf, rstp) for YouTube videos?")
+  Config.register Config::BooleanValue.new('youtube.auto_info',
+    :default => false,
+    :desc => "Should the bot automatically detect YouTube URLs and reply with some info about them?")
 
   def youtube_filter(s)
     loc = Utils.check_location(s, /youtube\.com/)
@@ -227,6 +230,19 @@ class YouTubePlugin < Plugin
         }
       end
     end
+  end
+
+  def unreplied(m)
+    return if @bot.config['youtube.auto_info'] == false
+    return if m.action?
+
+    escaped = URI.escape m.message, bot.plugins['url'].class::OUR_UNSAFE
+    urls = URI.extract escaped, ['http', 'https']
+    return if urls.length == 0
+
+    movie = urls[0]
+    vid = @bot.filter :"youtube.video", :url => movie
+    m.reply _("%{bold}%{title}%{bold} by %{author} (%{duration}). %{views} views, faved %{faves} times") % {:bold => Bold}.merge(vid)
   end
 
 end

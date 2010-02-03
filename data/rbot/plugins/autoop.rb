@@ -174,6 +174,7 @@ class AutoOP < Plugin
   end
 end
 
+
 plugin = AutoOP.new
 
 plugin.map 'autoop list', :action => 'list'

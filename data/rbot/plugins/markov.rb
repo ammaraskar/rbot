@@ -183,6 +183,62 @@ class MarkovPlugin < Plugin
     m.okay
   end
 
+  def inspect(m, params)
+    input = clean_str(params[:input].to_s)
+    input.downcase!
+    chain = input.split(/ /)
+    if chain.size == 2
+      m.reply("'#{segment}' has the default (%{p}%) chance of showing up" % { :p => probability? })
+      return
+    end
+    chain.push(MARKER.to_s)
+
+    output = "%{a} %{b}" % {:a => chain[0], :b => chain[1]}
+    broken = false
+    prob = 1.0
+
+    word1 = chain.shift
+    word2 = chain.shift
+    segment = "#{word1} #{word2}"
+
+    chain.size.times do
+      word3 = chain.shift
+      break if word3.intern == MARKER
+
+      segment = "#{word1} #{word2}"
+      if @chains.key?(segment) == false
+        broken = true
+        break
+      end
+
+      wordlist = @chains[segment]
+      total = wordlist.first
+      hash = wordlist.last
+      if total == 0
+        broken = true
+        break
+      end
+
+      if hash.has_key?(word3.intern) == false
+        broken = true
+        break
+      end
+
+      word3Prob = hash[word3.intern]/total.to_f
+      prob *= word3Prob
+      output << sprintf(" %s (%.1f%%)", word3, word3Prob*100)
+
+      word1, word2 = word2, word3
+    end
+
+    if broken
+      m.reply("(4) '#{input}' should never occur")
+    else
+      output << sprintf("] out of [%s] = %.3f%%", input.split(/ /)[0,2].join(" "), prob*100)
+      m.reply("The odds of getting [#{output}")
+    end
+  end
+
   def upgrade_registry
     # we load all the keys and then iterate over this array because
     # running each() on the registry and updating it at the same time

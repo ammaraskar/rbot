@@ -211,6 +211,7 @@ class AzGamePlugin < Plugin
           res.push("%s: %d (%s)" % kv.flatten)
         }
         m.reply _("The game was won after %{tries} tries. Scores for this game:    %{scores}") % {:tries => @games[k].total_tries, :scores => ar.join('; ')}
+        updateHof(m, @games[k].score, m.sourcenick)
         @games.delete(k)
       when :out
         m.reply _("%{word} is not in the range %{bold}%{range}%{bold}") % {:word => word, :bold => Bold, :range => isit.last} if m.address?
@@ -257,10 +258,33 @@ class AzGamePlugin < Plugin
         res.push("%s: %d (%s)" % kv.flatten)
       }
       m.reply _("The game was cancelled after %{tries} tries. Scores for this game would have been:    %{scores}") % {:tries => @games[k].total_tries, :scores => ar.join('; ')}
+      updateHof(m, @games[k].score, nil)
       @games.delete(k)
     else
       m.reply _("no A-Z game running in this channel ...")
     end
+  end
+
+  def updateHof(m, scores, winner)
+    players = @registry[:players] || Hash.new
+    winner = winner.to_s
+    scores.each { |player|
+      name = player[0].to_s
+      points = player[1][0]
+      tries = player[1][1].split(" ")[0]
+
+      playerRecord = players[name] || Hash.new
+      playerRecord[:points] = playerRecord.fetch(:points, 0) + points
+      playerRecord[:games] = playerRecord.fetch(:games, 0) + 1
+
+      if name == winner
+        playerRecord[:wins] = playerRecord.fetch(:wins, 0) + 1
+      else
+        playerRecord[:wins] = playerRecord.fetch(:wins, 0) + 0
+      end
+      players[name] = playerRecord
+    }
+    @registry[:players] = players
   end
 
   def start_game(m, params)
@@ -597,17 +621,43 @@ class AzGamePlugin < Plugin
       return _("try to guess the word the bot is thinking of; if you guess wrong, the bot will use the new word to restrict the range of allowed words: eventually, the range will be so small around the correct word that you can't miss it")
     when 'play'
       return _("az => start a game if none is running, show the current word range otherwise; you can say 'az <language>' if you want to play in a language different from the current bot default")
+    when 'hof'
+      return _("az hof [wins|points|games] => Look at the Hall Of Fame for wins, points, or games. Defaults to wins")
     end
     langs = @rules.keys
     wls = Wordlist.list
     return [
-      _("az topics: play, rules, cancel, manage, check"),
+      _("az topics: play, rules, cancel, manage, check, hof"),
       _("available languages: %{langs}") % { :langs => langs.join(", ") },
       wls.empty? ? nil : _("available wordlists: %{wls}") % { :wls => wls.join(", ") },
     ].compact.join(". ")
 
   end
 
+  # Figure out who the winnar is!
+  def hof(m, params)
+      fool = m.sourcenick
+      tmpKey = params[:key].to_s
+      targetKey = tmpKey.to_sym
+      if @registry[:players] == nil or @registry[:players].to_hash.length == 0
+        m.reply("All I hear in the HoF is crickets...")
+        return
+      end
+      tmp = @registry[:players].to_hash
+      sorted = tmp.sort { |a,b| b[1][targetKey] <=> a[1][targetKey] }
+
+      winnersLeft = 5
+
+      winners = []
+      sorted.each do |player|
+          winners << "#{player[0]} has #{player[1][targetKey]}"
+          winnersLeft -= 1
+          if winnersLeft == 0
+              break
+          end
+      end
+      m.reply(winners.join(" | "))
+  end
 end
 
 plugin = AzGamePlugin.new
@@ -615,4 +665,5 @@ plugin.map 'az [:lang] word :cmd *params', :action=>'wordlist', :defaults => { :
 plugin.map 'az cancel', :action=>'stop_game', :private => false
 plugin.map 'az check :word', :action => 'manual_word_check', :private => false
 plugin.map 'az [play] [:lang] [autoadd :addlang]', :action=>'start_game', :private => false, :defaults => { :lang => nil, :addlang => nil }
+plugin.map 'az hof :key', :action => 'hof', :defaults => {:key => "wins"}, :requirements => {:key => /^(?:wins|points|games)$/}
 

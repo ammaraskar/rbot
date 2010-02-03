@@ -5,9 +5,28 @@
 #
 # TODO:: switch to db
 
+require 'rexml/document'
+require 'cgi'
+
 define_structure :Quote, :num, :date, :source, :quote
 
 class QuotePlugin < Plugin
+  Config.register Config::StringValue.new('quotes.html_path',
+    :default => '/var/www/html/quotes',
+    :desc => "Where to dump our output, the user the bot runs as needs write access here")
+
+  Config.register Config::StringValue.new('quotes.header_template',
+    :default => 'templates/header',
+    :desc => "HTML 'header' file that will be used to build HTML output. You can use the following variables: %%channel%% - channel name")
+
+  Config.register Config::StringValue.new('quotes.body_template',
+    :default => 'templates/body',
+    :desc => "HTML 'body' file that will be used to build HTML output. This will be used to generate HTML for each quote in the channel. You can use the following variables: %%timestamp%% - when the quote was recorded ; %%id%% - the quote's id number (for getquote) ; %%author%% - nick of the person who added the quote ; %%channel%% - channel name ; %%quote%% - the actual quote")
+
+  Config.register Config::StringValue.new('quotes.footer_template',
+    :default => 'templates/footer',
+    :desc => "HTML 'footer' file that will be used to build HTML output. You can use the following variables: %%channel%% - channel name")
+
   def dirname
     'quotes'
   end
@@ -51,6 +70,108 @@ class QuotePlugin < Plugin
         error e.backtrace.join("\n")
       end
     }
+  end
+
+  def cmd_dumptoxml(m, p)
+    destDir = @bot.config['quotes.html_path']
+
+    Dir.mkdir(destDir) unless FileTest.directory?(destDir)
+    @lists.each { |channel, quotes|
+      begin
+        doc = REXML::Document.new
+
+        doc.add_element("channel", {"name" => channel})
+        quoteList = REXML::Element.new("quotes")
+
+        quotes.compact.each{ |q|
+          node = REXML::Element.new("quote")
+          node.add_attributes({"date" => q.date,
+                                 "id" => q.num,
+                             "author" => q.source[0,q.source.index("!")]})
+          node.add_text(q.quote.gsub(/[\x00-\x1f]/, ''))
+          quoteList.add_element(node)
+        }
+
+        doc.root.add_element(quoteList)
+
+        filePath = "#{destDir}/#{channel.delete("#")}.xml"
+        outF = File.new(filePath, "w")
+        doc.write(outF, 2)
+        outF.close()
+      rescue => e
+        error "Failed to dump quotes for channel #{channel}!\n#{$!}"
+        error "#{e.class}: #{e}"
+        error e.backtrace.join("\n")
+        m.reply("Hrm, that didn't work for #{channel}. Check the logs")
+      end
+    }
+    m.reply("Done!")
+  end
+
+  def cmd_dumptohtml(m, p)
+    destDir = @bot.config['quotes.html_path']
+
+    begin
+      headerF = File.new(datafile(@bot.config['quotes.header_template']))
+      headerLines = headerF.readlines
+      headerF.close
+
+      bodyF = File.new(datafile(@bot.config['quotes.body_template']))
+      bodyLines = bodyF.readlines
+      bodyF.close
+
+      footerF = File.new(datafile(@bot.config['quotes.footer_template']))
+      footerLines = footerF.readlines
+      footerF.close
+    rescue => e
+      error "Had problems with templates!"
+      error "#{e.class}: #{e}"
+      error e.backtrace.join("\n")
+      m.reply("Had problems with the templates. Check the logs")
+    end
+
+    Dir.mkdir(destDir) unless FileTest.directory?(destDir)
+    @lists.each { |channel, quotes|
+      begin
+        filePath = "#{destDir}/#{channel.delete("#")}.html"
+        outF = File.new(filePath, "w")
+
+        headerSubs = { "%%channel%%" => channel }
+
+        headerLines.each { |line|
+          headerSubs.each { |pattern, value| line = line.gsub(pattern, value) }
+          outF.puts line
+        }
+
+        quotes.compact.each{ |q|
+          bodySubs = { "%%timestamp%%" => q.date.to_s,
+                              "%%id%%" => CGI.escapeHTML(q.num.to_s),
+                          "%%author%%" => CGI.escapeHTML(q.source[0, q.source.index("!")]),
+                         "%%channel%%" => CGI.escapeHTML(channel),
+                           "%%quote%%" => CGI.escapeHTML(q.quote.gsub(/[\x00-\x1f]/, '')),
+          }
+
+          bodyLines.each { |line|
+            bodySubs.each { |pattern, value| line = line.gsub(pattern, value) }
+            outF.puts line
+          }
+        }
+
+        footerSubs = { "%%channel%%" => channel }
+        footerLines.each { |line|
+          footerSubs.each { |pattern, value| line = line.gsub(pattern, value) }
+          outF.puts line
+        }
+
+        outF.close()
+      rescue => e
+        error "Failed to dump quotes for channel #{channel}!\n#{$!}"
+        error "#{e.class}: #{e}"
+        error e.backtrace.join("\n")
+        m.reply("Hrm, that didn't work for #{channel}. Check the logs")
+      end
+    }
+    m.reply("Done!")
   end
 
   def cleanup
@@ -324,3 +445,6 @@ plugin.map "countquote [*reg]", :action => :cmd_countquote, :private => false, :
 plugin.map "topicquote [:num]", :action => :cmd_topicquote, :private => false, :requirements => { :num => /^\d+$/ }, :auth_path => '!quote::topic!'
 plugin.map "lastquote", :action => :cmd_lastquote, :private => false, :auth_path => '!quote::view::last!'
 
+plugin.default_auth('dump', false) # Prevent random people from dumping the database
+plugin.map "dumpxml", :action => :cmd_dumptoxml, :auth_path => '!quote::dump!'
+plugin.map "dumphtml", :action => :cmd_dumptohtml, :auth_path => '!quote::dump!'

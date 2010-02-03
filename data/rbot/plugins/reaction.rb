@@ -446,7 +446,7 @@ end
 plugin = ReactionPlugin.new
 
 plugin.map plugin.add_syntax, :action => 'handle_add',
-  :requirements => { :trigger => plugin.trigger_syntax }
+  :requirements => { :trigger => plugin.trigger_syntax }, :auth_path => 'add!'
 
 # ruby reactions are security holes, so give stricter permission
 plugin.default_auth('react::ruby', false)
@@ -462,7 +462,7 @@ plugin.map plugin.move_syntax, :action => 'handle_move',
   :requirements => {
     :source => plugin.trigger_syntax,
     :dest => plugin.trigger_syntax
-  }
+  }, :auth_path => 'add!'
 
 plugin.map 'reaction del[ete] *trigger [:n]', :action => 'handle_rm', :auth_path => 'del!',
   :requirements => { :trigger => plugin.trigger_syntax, :n => /^\d+$/ }

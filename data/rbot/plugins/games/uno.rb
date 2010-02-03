@@ -185,6 +185,27 @@ class UnoGame
     @last_picker = 0
     @must_play = nil
     @manager = manager
+    @translations = {
+        / ?red ?/ => "r",
+        / ?green ?/ => "g",
+        / ?blue ?/ => "b",
+        / ?yellow ?/ => "y",
+        / ?wild ?/ => "w",
+        / ?draw ?/ => "+",
+        /d/ => "+",
+        / ?reverse ?/ => "r",
+        / ?skip ?/ => "s",
+        / ?zero ?/ => "0",
+        / ?one ?/ => "1",
+        / ?two ?/ => "2",
+        / ?three ?/ => "3",
+        / ?four ?/ => "4",
+        / ?five ?/ => "5",
+        / ?six ?/ => "6",
+        / ?seven ?/ => "7",
+        / ?eight ?/ => "8",
+        / ?nine ?/ => "9",
+    }
   end
 
   def get_player(user)
@@ -382,10 +403,13 @@ class UnoGame
   def play_card(source, cards)
     debug "Playing card #{cards}"
     p = get_player(source)
-    shorts = cards.gsub(/\s+/,'').match(/^(?:([rbgy]\+?\d)\1?|([rbgy][rs])|(w(?:\+4)?)([rbgy])?)$/).to_a
+    @translations.each do |pat, repl|
+      cards.gsub!(pat, repl)
+    end
+    shorts = cards.gsub(/\s+/,'').match(/^(?:([rbgy]\+?\d){1,2}|([rbgy][rs])|(w(?:\+4)?)([rbgy])?)$/).to_a
     debug shorts.inspect
     if shorts.empty?
-      announce _("what cards were that again?")
+      announce _("Why not play a real card?")
       return
     end
     full = shorts[0]
@@ -878,17 +902,17 @@ class UnoPlugin < Plugin
     case topic
     when 'commands'
       [
-      _("'jo' to join in"),
-      _("'pl <card>' to play <card>: e.g. 'pl g7' to play Green 7, or 'pl rr' to play Red Reverse, or 'pl y2y2' to play both Yellow 2 cards"),
-      _("'pe' to pick a card"),
-      _("'pa' to pass your turn"),
-      _("'co <color>' to pick a color after playing a Wild: e.g. 'co g' to select Green (or 'pl w+4 g' to select the color when playing the Wild)"),
-      _("'ca' to show current cards"),
-      _("'cd' to show the current discard"),
-      _("'ch' to challenge a Wild +4"),
-      _("'od' to show the playing order"),
-      _("'ti' to show play time"),
-      _("'tu' to show whose turn it is")
+      _("'jo' or 'join' to join in"),
+      _("'pl <card>' to play <card>: e.g. 'pl g7' to play Green 7, or 'pl rr' to play Red Reverse, or 'pl y2y2' to play both Yellow 2 cards. You can use 'play' as well"),
+      _("'pe' or 'pick' to pick a card"),
+      _("'pa' or 'pass' to pass your turn"),
+      _("'co <color>' to pick a color after playing a Wild: e.g. 'co g' to select Green (or 'pl w+4 g' to select the color when playing the Wild) (you can use 'color <color' as well)"),
+      _("'ca' or 'cards' to show current cards"),
+      _("'cd' or 'discard' to show the current discard"),
+      _("'ch' or 'challenge' to challenge a Wild +4"),
+      _("'od' or 'order' to show the playing order"),
+      _("'ti' or 'time' to show play time"),
+      _("'tu' or 'turn' to show whose turn it is")
     ].join("; ")
     when 'challenge'
       _("A Wild +4 can only be played legally if you don't have normal (not special) cards of the current color. ") +
@@ -944,10 +968,10 @@ class UnoPlugin < Plugin
     g = @games[m.channel]
     replied = true
     case m.plugin.intern
-    when :jo # join game
+    when :jo, :join # join game
       return if m.params
       g.add_player(m.source)
-    when :pe # pick card
+    when :pe, :dr, :draw, :pick # pick card
       return if m.params
       if g.has_turn?(m.source)
         if g.player_has_picked
@@ -960,32 +984,32 @@ class UnoPlugin < Plugin
       else
         m.reply _("It's not your turn")
       end
-    when :pa # pass turn
+    when :pa, :pass # pass turn
       return if m.params or not g.start_time
       if g.has_turn?(m.source)
         g.pass(m.source)
       else
         m.reply _("It's not your turn")
       end
-    when :pl # play card
+    when :p, :pl, :play# play card
       if g.has_turn?(m.source)
         g.play_card(m.source, m.params.downcase)
       else
         m.reply _("It's not your turn")
       end
-    when :co # pick color
+    when :co, :color # pick color
       if g.has_turn?(m.source)
         g.choose_color(m.source, m.params.downcase)
       else
         m.reply _("It's not your turn")
       end
-    when :ca # show current cards
+    when :ca, :crds, :cards # show current cards
       return if m.params
       g.show_all_cards(m.source)
-    when :cd # show current discard
+    when :cd, :discard # show current discard
       return if m.params or not g.start_time
       g.show_discard
-    when :ch
+    when :ch, :challenge
       if g.has_turn?(m.source)
         if g.last_discard
           g.challenge
@@ -995,13 +1019,13 @@ class UnoPlugin < Plugin
       else
         m.reply _("It's not your turn")
       end
-    when :od # show playing order
+    when :od, :order # show playing order
       return if m.params
       g.show_order
-    when :ti # show play time
+    when :ti, :time # show play time
       return if m.params
       g.show_time
-    when :tu # show whose turn is it
+    when :tu, :turn # show whose turn is it
       return if m.params
       if g.has_turn?(m.source)
         m.reply _("it's your turn, sleepyhead"), :nick => true

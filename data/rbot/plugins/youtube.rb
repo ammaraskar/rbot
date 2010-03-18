@@ -242,6 +242,7 @@ class YouTubePlugin < Plugin
 
     movie = urls[0]
     vid = @bot.filter :"youtube.video", :url => movie
+    return if vid == nil
     m.reply _("%{bold}%{title}%{bold} by %{author} (%{duration}). %{views} views, faved %{faves} times") % {:bold => Bold}.merge(vid)
   end
 

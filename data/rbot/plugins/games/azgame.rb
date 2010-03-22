@@ -146,7 +146,7 @@ class AzGamePlugin < Plugin
       :first => 'abacus',
       :last => 'zuni',
       :url => "http://www.chambersharrap.co.uk/chambers/features/chref/chref.py/main?query=%s&title=21st",
-      :listener => /^[a-z]+$/
+      :listener => /^[a-z]{2,}$/
     },
     }
 
@@ -591,7 +591,7 @@ class AzGamePlugin < Plugin
           lemma = prelemma.downcase
           debug "checking lemma #{lemma} (#{prelemma}) and discarding #{discard}"
           next if wc.key?(lemma.to_sym)
-          if lemma =~ /^[a-z]+$/
+          if lemma =~ /^[a-z]{2,}$/
             debug "good one"
             lemmi << lemma
             wc[lemma.to_sym] = {:who => :dict}

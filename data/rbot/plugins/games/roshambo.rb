@@ -17,12 +17,18 @@ class RoshamboPlugin < Plugin
   def initialize
     super
     @scoreboard = {}
-    @beats = { :rock => :scissors, :paper => :rock, :scissors => :paper}
+    @beats = {
+      :rock => [:scissors, :lizard],
+      :paper => [:rock, :spock],
+      :scissors => [:paper, :lizard],
+      :spock => [:rock, :scissors],
+      :lizard => [:spock, :paper],
+    }
     @plays = @beats.keys
   end
 
   def help(plugin, topic="")
-    "roshambo <rock|paper|scissors> or rps <rock|paper|scissors> => play roshambo"
+    "roshambo <rock|paper|scissors|lizard|spock> or rps <rock|paper|scissors|lizard|spock> => play roshambo"
   end
 
   def rps(m, params)
@@ -51,12 +57,12 @@ class RoshamboPlugin < Plugin
   end
 
   def score(bot_choice, human_choice)
-    return -1 if @beats[bot_choice] == human_choice
-    return 1 if @beats[human_choice] == bot_choice
+    return -1 if @beats[bot_choice].include? human_choice
+    return 1 if @beats[human_choice].include? bot_choice
     return 0
   end
 end
 
 plugin = RoshamboPlugin.new
-plugin.map "roshambo :play", :action => :rps, :requirements => { :play => /rock|paper|scissors/ }
-plugin.map "rps :play", :action => :rps, :requirements => { :play => /rock|paper|scissors/ }
+plugin.map "roshambo :play", :action => :rps, :requirements => { :play => /rock|paper|scissors|lizard|spock/ }
+plugin.map "rps :play", :action => :rps, :requirements => { :play => /rock|paper|scissors|lizard|spock/ }

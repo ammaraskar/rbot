@@ -135,8 +135,12 @@ class TF2Plugin < Plugin
   end
 
   def tf2(m, params)
-    addr = params[:conn_str]
-    port = 27015
+    if params[:conn_str].include? ":"
+      addr, port = params[:conn_str].split ":"
+    else
+      addr = params[:conn_str]
+      port = 27015
+    end
     info = nil
     1.upto(3) {
       info = a2s_info(addr, port)
@@ -148,8 +152,11 @@ class TF2Plugin < Plugin
       players = "%2s/%2s" % [info[8], info[9]]
       map = info[4]
       server = "%10s" % addr
-      m.reply "#{server}: #{players} players on #{map}"
-#      m.reply "#{info[3]} is online with #{info[8]}/#{info[9]} players on #{info[4]}"
+      if port == 27015
+        m.reply _("#{server}: #{players} players on #{map}")
+      else
+        m.reply _("#{server}:#{port}: #{players} players on #{map}")
+      end
     else
       m.reply "Couldn't connect to #{params[:conn_str]}"
     end

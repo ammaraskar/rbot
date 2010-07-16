@@ -51,55 +51,69 @@ class TopicPlugin < Plugin
 
   def handletopic(m, param)
     return unless m.kind_of?(PrivMessage)
+    input_chunks = param[:text]
+    chans = []
     if m.public?
-      ch = m.channel
+      chans << m.channel
+      last_chan_idx = -1
     else
-      ch = m.server.get_channel(param[:channel])
-      unless ch
-        m.reply("I am not in channel #{param[:channel]}")
-        return
-      end
+      channel_names = input_chunks.grep /^#/
+      channel_names.each { |c|
+        ch = m.server.get_channel(c)
+        unless ch
+          m.reply("I am not in channel #{c}")
+          return
+        end
+        chans << ch
+      }
+      last_chan_idx = input_chunks.index(channel_names[-1])
     end
-    cmd = param[:command]
-    txt = param[:text].to_s
+    cmd = input_chunks[last_chan_idx+1]
+    txt = input_chunks[last_chan_idx+2..-1].join ' '
 
     case cmd
     when /^a(dd|ppend)$/
-      topicappend(m, ch, txt)
+      chans.each { |ch| topicappend(m, ch, txt) }
     when 'prepend'
-      topicprepend(m, ch, txt)
+      chans.each { |ch| topicprepend(m, ch, txt) }
     when 'addat'
-      if txt =~ /\s*(-?\d+)\s+(.*)\s*/
-        num = $1.to_i - 1
-        num += 1 if num < 0
-        txt = $2
-        topicaddat(m, ch, num, txt)
-      end
+      chans.each { |ch|
+        if txt =~ /\s*(-?\d+)\s+(.*)\s*/
+          num = $1.to_i - 1
+          num += 1 if num < 0
+          txt = $2
+          topicaddat(m, ch, num, txt)
+        end
+      }
     when /^del(ete)?$/
-      if txt =~ /\s*(-?\d+)\s*/
-        num=$1.to_i - 1
-        num += 1 if num < 0
-        topicdel(m, ch, num)
-      end
+      chans.each { |ch|
+        if txt =~ /\s*(-?\d+)\s*/
+          num=$1.to_i - 1
+          num += 1 if num < 0
+          topicdel(m, ch, num)
+        end
+      }
     when 'set'
-      topicset(m, ch, txt)
+      chans.each { |ch| topicset(m, ch, txt) }
     when 'clear'
-      topicset(m, ch, '')
+      chans.each { |ch| topicset(m, ch, '') }
     when /^sep(arator)?$/
-      topicsep(m, ch, txt)
+      chans.each { |ch| topicsep(m, ch, txt) }
     when 'learn'
-      learntopic(m, ch)
+      chans.each { |ch| learntopic(m, ch) }
     when 'replace'
-      if txt =~ /\s*(-?\d+)\s+(.*)\s*/
-        num = $1.to_i - 1
-        num += 1 if num < 0
-        txt = $2
-        replacetopic(m, ch, num, txt)
-      end
+      chans.each { |ch|
+        if txt =~ /\s*(-?\d+)\s+(.*)\s*/
+          num = $1.to_i - 1
+          num += 1 if num < 0
+          txt = $2
+          replacetopic(m, ch, num, txt)
+        end
+      }
     when 'restore'
-      restoretopic(m, ch)
+      chans.each { |ch| restoretopic(m, ch) }
     when 'undo'
-      undotopic(m, ch)
+      chans.each { |ch| undotopic(m, ch) }
     else
       m.reply 'unknown command'
     end
@@ -253,8 +267,8 @@ class TopicPlugin < Plugin
 end
 plugin = TopicPlugin.new
 
-plugin.map 'topic :command [*text]', :action => 'handletopic', :public => true, :private => false
-plugin.map 'topic :channel :command [*text]', :action => 'handletopic', :public => false, :private => true
+plugin.map 'topic [*text]', :action => 'handletopic', :public => true, :private => false
+plugin.map 'topic [*text]', :action => 'handletopic', :public => false, :private => true
 
 plugin.default_auth('*', false)
 

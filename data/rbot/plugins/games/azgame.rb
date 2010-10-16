@@ -287,6 +287,16 @@ class AzGamePlugin < Plugin
     @registry[:players] = players
   end
 
+  def set_points(m, params)
+    players = @registry[:players]
+    victim = params[:victim]
+    playerRecord = players[victim]
+    playerRecord[:points] = Integer(params[:points])
+    players[victim] = playerRecord
+    @registry[:players] = players
+    m.okay
+  end
+
   def start_game(m, params)
     return if m.channel.nil? # Shouldn't happen, but you never know
     k = m.channel.downcase.to_s # to_sym?
@@ -666,4 +676,4 @@ plugin.map 'az cancel', :action=>'stop_game', :private => false
 plugin.map 'az check :word', :action => 'manual_word_check', :private => false
 plugin.map 'az [play] [:lang] [autoadd :addlang]', :action=>'start_game', :private => false, :defaults => { :lang => nil, :addlang => nil }
 plugin.map 'az hof :key', :action => 'hof', :defaults => {:key => "wins"}, :requirements => {:key => /^(?:wins|points|games)$/}
-
+plugin.map 'az setpoints :victim :points', :action => 'set_points', :auth_path => '!az::edit!'

@@ -169,7 +169,7 @@ class MarkovPlugin < Plugin
   end
 
   def forget(m, params)
-    input = clean_str(params[:input].to_s).downcase
+    input = params[:input].to_s.downcase
     key = input.split(/ /)[0,2].join(" ")
 
     if @chains.key?(key) == false
@@ -184,7 +184,7 @@ class MarkovPlugin < Plugin
   end
 
   def inspect(m, params)
-    input = clean_str(params[:input].to_s)
+    input = params[:input].to_s
     input.downcase!
     chain = input.split(/ /)
     if chain.size == 2

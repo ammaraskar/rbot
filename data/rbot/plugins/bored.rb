@@ -68,8 +68,17 @@ class BoredPlugin < Plugin
       return
     end
 
-    victim = rand(items.length)
-    m.reply("[#{victim+1}]: #{items[victim]}")
+    if params[:index] == nil
+      victim = rand(items.length)
+      m.reply("[#{victim+1}]: #{items[victim]}")
+    else
+      idx = params[:index].to_i - 1
+      if items.length < idx:
+        m.reply _("Err, don't have that many items")
+      else
+        m.reply _("[#{params[:index]}]: #{items[idx]}")
+      end
+    end
   end
 
   def getCount(m, params)
@@ -109,6 +118,6 @@ plugin.map 'bored del :id', :action => :delItem, :auth_path => 'del'
 plugin.map 'bored count', :action => :getCount
 plugin.map 'bored list :range', :action => :getList, :requirements => {:range => /^\d+-\d+/}
 plugin.map 'bored list', :action => :getList
-plugin.map 'bored', :action => :getItem
+plugin.map 'bored [:index]', :action => :getItem
 
 plugin.default_auth('bored::del', false)

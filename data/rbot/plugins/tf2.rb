@@ -92,10 +92,6 @@ class TF2Plugin < Plugin
   def players(m, params)
     addr = params[:conn_str]
     port = 27015
-    info = nil
-
-    addr = params[:conn_str]
-    port = 27015
     playerInfo = []
 
     1.upto(3) {

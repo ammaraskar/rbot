@@ -10,6 +10,10 @@
 
 class NotePlugin < Plugin
   Note = Struct.new('Note', :time, :from, :private, :text)
+  Config.register Config::ArrayValue.new('note.ignore_phrases',
+    :default => [],
+    :desc => "A list of phrases that don't count as a user being back")
+
 
   def help(plugin, topic="")
     "note <nick> <string> => stores a note (<string>) for <nick>"
@@ -18,6 +22,7 @@ class NotePlugin < Plugin
   def message(m)
     begin
       return unless @registry.has_key? m.sourcenick
+      return if @bot.config['note.ignore_phrases'].include? m.message
       pub = []
       priv = []
       @registry[m.sourcenick].each do |n|

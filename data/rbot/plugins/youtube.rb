@@ -7,10 +7,11 @@
 #
 # Copyright:: (C) 2008 Giuseppe Bilotta
 
+require 'json'
 
 class YouTubePlugin < Plugin
   YOUTUBE_SEARCH = "http://gdata.youtube.com/feeds/api/videos?vq=%{words}&orderby=relevance"
-  YOUTUBE_VIDEO = "http://gdata.youtube.com/feeds/api/videos/%{id}"
+  YOUTUBE_VIDEO = "https://www.googleapis.com/youtube/v3/videos?part=snippet%2Cstatistics%2CcontentDetails&id=%{id}&key=%{key}"
 
   YOUTUBE_VIDEO_URLS = %r{youtube.com/(?:watch\?(?:.*&)?v=|v/)(.*?)(&.*)?$}
 
@@ -26,6 +27,9 @@ class YouTubePlugin < Plugin
   Config.register Config::BooleanValue.new('youtube.auto_info',
     :default => false,
     :desc => "Should the bot automatically detect YouTube URLs and reply with some info about them?")
+  Config.register Config::StringValue.new('youtube.api_key',
+    :default => "",
+    :desc => "Youtube API v3 key generated from https://developers.google.com/youtube/registering_an_application")
 
   def youtube_filter(s)
     loc = Utils.check_location(s, /youtube\.com/)
@@ -52,24 +56,19 @@ class YouTubePlugin < Plugin
   end
 
   def youtube_apivideo_filter(s)
-    # This filter can be used either
-    e = s[:rexml] || REXML::Document.new(s[:text]).elements["entry"]
-    # TODO precomputing mg doesn't work on my REXML, despite what the doc
-    # says?
-    #   mg = e.elements["media:group"]
-    #   :title => mg["media:title"].text
-    # fails because "media:title" is not an Integer. Bah
+    debug s
+    video_item = s["items"].first
+
     vid = {
       :formats => [],
-      :author => (e.elements["author/name"].text rescue nil),
-      :title =>  (e.elements["media:group/media:title"].text rescue nil),
-      :desc =>   (e.elements["media:group/media:description"].text rescue nil),
-      :cat => (e.elements["media:group/media:category"].text rescue nil),
-      :seconds => (e.elements["media:group/yt:duration/"].attributes["seconds"].to_i rescue nil),
-      :url => (e.elements["media:group/media:player/"].attributes["url"] rescue nil),
-      :rating => (("%s/%s" % [e.elements["gd:rating"].attributes["average"], e.elements["gd:rating/@max"].value]) rescue nil),
-      :views => (e.elements["yt:statistics"].attributes["viewCount"] rescue nil),
-      :faves => (e.elements["yt:statistics"].attributes["favoriteCount"] rescue nil)
+      :author => (video_item["snippet"]["channelTitle"] rescue nil),
+      :title =>  (video_item["snippet"]["title"] rescue nil),
+      :desc =>   (video_item["snippet"]["description"] rescue nil),
+      :seconds => (parse_iso8601_duration_hack(video_item["contentDetails"]["duration"]) rescue nil),
+      :likes => (video_item["statistics"]["likeCount"] rescue nil),
+      :dislikes => (video_item["statistics"]["dislikeCount"] rescue nil),
+      :views => (video_item["statistics"]["viewCount"] rescue nil),
+      :faves => (video_item["statistics"]["favoriteCount"] rescue nil)
     }
     if vid[:desc]
       vid[:desc].gsub!(/\s+/m, " ")
@@ -79,41 +78,24 @@ class YouTubePlugin < Plugin
     else
       vid[:duration] = _("unknown duration")
     end
-    e.elements.each("media:group/media:content") { |c|
-      if url = (c.attributes["url"] rescue nil)
-        type = c.attributes["type"] rescue nil
-        medium = c.attributes["medium"] rescue nil
-        expression = c.attributes["expression"] rescue nil
-        seconds = c.attributes["duration"].to_i rescue nil
-        fmt = case num_fmt = (c.attributes["yt:format"] rescue nil)
-              when "1"
-                "h263+amr"
-              when "5"
-                "swf"
-              when "6"
-                "mp4+aac"
-              when nil
-                nil
-              else
-                num_fmt
-              end
-        vid[:formats] << {
-          :url => url, :type => type,
-          :medium => medium, :expression => expression,
-          :seconds => seconds,
-          :numeric_format => num_fmt,
-          :format => fmt
-        }.delete_if { |k, v| v.nil? }
-        if seconds
-          vid[:formats].last[:duration] = Utils.secs_to_short(seconds)
-        else
-          vid[:formats].last[:duration] = _("unknown duration")
-        end
-      end
-    }
     debug vid
     return vid
   end
+
+  def parse_iso8601_duration_hack(s)
+    duration_regex = %r{PT (?:(\d+)H)? (?:(\d+)M)? (?:(\d+)S)?}x
+    if duration_regex.match(s)
+      matches = duration_regex.match(s).captures
+      hours = matches[0].to_i
+      minutes = matches[1].to_i
+      seconds = matches[2].to_i
+
+      return seconds + (minutes * 60) + (hours * 60 * 60)
+    else
+      return nil
+    end
+  end
+
 
   def youtube_apisearch_filter(s)
     vids = []
@@ -150,15 +132,14 @@ class YouTubePlugin < Plugin
 
     debug id
 
-    url = YOUTUBE_VIDEO % {:id => id}
-    resp, xml = @bot.httputil.get_response(url)
-    unless Net::HTTPSuccess === resp
-      debug("error looking for movie %{id} on youtube: %{e}" % {:id => id, :e => xml})
-      return nil
-    end
-    debug xml
+    url = YOUTUBE_VIDEO % {:id => id, :key => @bot.config['youtube.api_key']}
+    raw_json = @bot.httputil.get(url)
+
+    debug raw_json
+
+    response = JSON.parse(raw_json)
     begin
-      return @bot.filter(:"youtube.apivideo", DataStream.new(xml, s))
+      return youtube_apivideo_filter(response)
     rescue => e
       debug e
       return nil
@@ -232,6 +213,10 @@ class YouTubePlugin < Plugin
     end
   end
 
+  def comma_numbers(number, delimiter = ',')
+    number.to_s.reverse.gsub(%r{([0-9]{3}(?=([0-9])))}, "\\1#{delimiter}").reverse
+  end
+
   def unreplied(m)
     return if @bot.config['youtube.auto_info'] == false
     return if m.action?
@@ -243,7 +228,10 @@ class YouTubePlugin < Plugin
     movie = urls[0]
     vid = @bot.filter :"youtube.video", :url => movie
     return if vid == nil
-    m.reply _("%{bold}%{title}%{bold} by %{author} (%{duration}). %{views} views, faved %{faves} times") % {:bold => Bold}.merge(vid)
+    vid["views"] = comma_numbers(vid["views"])
+    vid["likes"] = comma_numbers(vid["likes"])
+    vid["dislikes"] = comma_numbers(vid["dislikes"])
+    m.reply _("%{bold}%{title}%{bold} by %{author} (%{duration}). %{views} views. %{likes}/%{dislikes} likes/dislikes") % {:bold => Bold}.merge(vid)
   end
 
 end

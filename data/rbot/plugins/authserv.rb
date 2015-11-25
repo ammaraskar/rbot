@@ -66,11 +66,11 @@ class AuthServPlugin < Plugin
     case m.message
     when @bot.config['authserv.authenticated_string']
       debug "we identified successfully to nickserv"
-      if @requestor != nil:
+      if @requestor != nil
         @bot.notice(@requestor, "We identified successfully to nickserv")
       end
     else
-      if @requestor != nil:
+      if @requestor != nil
         @bot.notice(@requestor, "Got message back from #{m.sourcenick}: #{m.message}")
       end
     end
@@ -82,4 +82,3 @@ plugin = AuthServPlugin.new
 
 plugin.map "authserv", :action => 'do_auth'
 plugin.default_auth('*', false)
-

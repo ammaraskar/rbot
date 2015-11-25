@@ -73,7 +73,7 @@ class BoredPlugin < Plugin
       m.reply("[#{victim+1}]: #{items[victim]}")
     else
       idx = params[:index].to_i - 1
-      if items.length < idx:
+      if items.length < idx
         m.reply _("Err, don't have that many items")
       else
         m.reply _("[#{params[:index]}]: #{items[idx]}")

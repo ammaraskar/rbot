@@ -1,3 +1,4 @@
+# encoding: UTF-8
 #-- vim:sw=2:et
 #++
 #
@@ -6,6 +7,7 @@
 require 'thread'
 
 require 'etc'
+require 'date'
 require 'fileutils'
 require 'logger'
 
@@ -17,6 +19,7 @@ $logger = Logger.new($stderr)
 $logger.datetime_format = $dateformat
 $logger.level = $cl_loglevel if defined? $cl_loglevel
 $logger.level = 0 if $debug
+$logger_stderr = $logger
 
 $log_queue = Queue.new
 $log_thread = nil
@@ -55,17 +58,17 @@ def rawlog(level, message=nil, who_pos=1)
   # messages originating at the same time, we blank #{who} after the first message
   # is output.
   # Also, we output strings as-is but for other objects we use pretty_inspect
-  case message
-  when String
-    str = message
-  else
-    str = message.pretty_inspect
-  end
+  message = message.kind_of?(String) ? message : (message.pretty_inspect rescue '?')
   qmsg = Array.new
-  str.each_line { |l|
+  message.each_line { |l|
     qmsg.push [level, l.chomp, who]
     who = ' ' * who.size
   }
+  if level >= Logger::Severity::WARN and not $daemonize
+    qmsg.each do |l|
+      $logger_stderr.add(*l)
+    end
+  end
   $log_queue.push qmsg
 end
 
@@ -143,13 +146,13 @@ end
 
 require 'rbot/load-gettext'
 require 'rbot/config'
-require 'rbot/config-compat'
 
 require 'rbot/irc'
 require 'rbot/rfc2812'
 require 'rbot/ircsocket'
 require 'rbot/botuser'
 require 'rbot/timer'
+require 'rbot/registry'
 require 'rbot/plugins'
 require 'rbot/message'
 require 'rbot/language'
@@ -159,7 +162,7 @@ module Irc
 # Main bot class, which manages the various components, receives messages,
 # handles them or passes them to plugins, and contains core functionality.
 class Bot
-  COPYRIGHT_NOTICE = "(c) Tom Gilbert and the rbot development team"
+  COPYRIGHT_NOTICE = "(c) Giuseppe Bilotta and the rbot development team"
   SOURCE_URL = "http://ruby-rbot.org"
   # the bot's Auth data
   attr_reader :auth
@@ -185,17 +188,20 @@ class Bot
   # TODO multiserver
   attr_reader :socket
 
-  # bot's object registry, plugins get an interface to this for persistant
-  # storage (hash interface tied to a db file, plugins use Accessors to store
-  # and restore objects in their own namespaces.)
-  attr_reader :registry
-
   # bot's plugins. This is an instance of class Plugins
   attr_reader :plugins
 
   # bot's httputil helper object, for fetching resources via http. Sets up
   # proxies etc as defined by the bot configuration/environment
   attr_accessor :httputil
+
+  # mechanize agent factory
+  attr_accessor :agent
+
+  # loads and opens new registry databases, used by the plugins
+  attr_accessor :registry_factory
+
+  attr_accessor :webservice
 
   # server we are connected to
   # TODO multiserver
@@ -278,6 +284,18 @@ class Bot
     Config.register Config::BooleanValue.new('server.ssl',
       :default => false, :requires_restart => true, :wizard => true,
       :desc => "Use SSL to connect to this server?")
+    Config.register Config::BooleanValue.new('server.ssl_verify',
+      :default => false, :requires_restart => true,
+      :desc => "Verify the SSL connection?",
+      :wizard => true)
+    Config.register Config::StringValue.new('server.ssl_ca_file',
+      :default => default_ssl_ca_file, :requires_restart => true,
+      :desc => "The CA file used to verify the SSL connection.",
+      :wizard => true)
+    Config.register Config::StringValue.new('server.ssl_ca_path',
+      :default => default_ssl_ca_path, :requires_restart => true,
+      :desc => "Alternativly a directory that includes CA PEM files used to verify the SSL connection.",
+      :wizard => true)
     Config.register Config::StringValue.new('server.password',
       :default => false, :requires_restart => true,
       :desc => "Password for connecting to this server (if required)",
@@ -418,11 +436,11 @@ class Bot
       },
       :desc => "Percentage of IRC penalty to consider when sending messages to prevent being disconnected for excess flood. Set to 0 to disable penalty control.")
     Config.register Config::StringValue.new('core.db',
-      :default => "bdb",
-      :wizard => true, :default => "bdb",
-      :validate => Proc.new { |v| ["bdb", "tc"].include? v },
+      :default => default_db, :store_default => true,
+      :wizard => true,
+      :validate => Proc.new { |v| Registry::formats.include? v },
       :requires_restart => true,
-      :desc => "DB adaptor to use for storing settings and plugin data. Options are: bdb (Berkeley DB, stable adaptor, but troublesome to install and unmaintained), tc (Tokyo Cabinet, new adaptor, fast and furious, but may be not available and contain bugs)")
+      :desc => "DB adaptor to use for storing the plugin data/registries. Options: " + Registry::formats.join(', '))
 
     @argv = params[:argv]
     @run_dir = params[:run_dir] || Dir.pwd
@@ -459,12 +477,6 @@ class Bot
 
     repopulate_botclass_directory
 
-    registry_dir = File.join(@botclass, 'registry')
-    Dir.mkdir(registry_dir) unless File.exist?(registry_dir)
-    unless FileTest.directory? registry_dir
-      error "registry storage location #{registry_dir} is not a directory"
-      exit 2
-    end
     save_dir = File.join(@botclass, 'safe_save')
     Dir.mkdir(save_dir) unless File.exist?(save_dir)
     unless FileTest.directory? save_dir
@@ -492,14 +504,8 @@ class Bot
       $daemonize = true
     end
 
-    case @config["core.db"]
-      when "bdb"
-        require 'rbot/registry/bdb'
-      when "tc"
-        require 'rbot/registry/tc'
-      else
-        raise _("Unknown DB adaptor: %s") % @config["core.db"]
-    end
+    @registry_factory = Registry.new @config['core.db']
+    @registry_factory.migrate_registry_folder(path)
 
     @logfile = @config['log.file']
     if @logfile.class!=String || @logfile.empty?
@@ -568,8 +574,6 @@ class Bot
       pf << "#{$$}\n"
     end
 
-    @registry = Registry.new self
-
     @timer = Timer.new
     @save_mutex = Mutex.new
     if @config['core.save_every'] > 0
@@ -608,7 +612,12 @@ class Bot
         debug "server.list is now #{@config['server.list'].inspect}"
     end
 
-    @socket = Irc::Socket.new(@config['server.list'], @config['server.bindhost'], :ssl => @config['server.ssl'], :penalty_pct =>@config['send.penalty_pct'])
+    @socket = Irc::Socket.new(@config['server.list'], @config['server.bindhost'], 
+                              :ssl => @config['server.ssl'],
+                              :ssl_verify => @config['server.ssl_verify'],
+                              :ssl_ca_file => @config['server.ssl_ca_file'],
+                              :ssl_ca_path => @config['server.ssl_ca_path'],
+                              :penalty_pct => @config['send.penalty_pct'])
     @client = Client.new
 
     @plugins.scan
@@ -801,7 +810,33 @@ class Bot
       :purge_split => @config['send.purge_split'],
       :truncate_text => @config['send.truncate_text'].dup
 
-    trap_sigs
+    trap_signals
+  end
+
+  # Determine (if possible) a valid path to a CA certificate bundle. 
+  def default_ssl_ca_file
+    [ '/etc/ssl/certs/ca-certificates.crt', # Ubuntu/Debian
+      '/etc/ssl/certs/ca-bundle.crt', # Amazon Linux
+      '/etc/ssl/ca-bundle.pem', # OpenSUSE
+      '/etc/pki/tls/certs/ca-bundle.crt' # Fedora/RHEL
+    ].find do |file|
+      File.readable? file
+    end
+  end
+
+  def default_ssl_ca_path
+    file = default_ssl_ca_file
+    File.dirname file if file
+  end
+
+  # Determine if tokyocabinet is installed, if it is use it as a default.
+  def default_db
+    begin
+      require 'tokyocabinet'
+      return 'tc'
+    rescue LoadError
+      return 'dbm'
+    end
   end
 
   def repopulate_botclass_directory
@@ -904,7 +939,15 @@ class Bot
   end
 
   # things to do when we receive a signal
-  def got_sig(sig, func=:quit)
+  def handle_signal(sig)
+    func = case sig
+           when 'SIGHUP'
+             :restart
+           when 'SIGUSR1'
+             :reconnect
+           else
+             :quit
+           end
     debug "received #{sig}, queueing #{func}"
     # this is not an interruption if we just need to reconnect
     $interrupted += 1 unless func == :reconnect
@@ -918,12 +961,11 @@ class Bot
   end
 
   # trap signals
-  def trap_sigs
+  def trap_signals
     begin
-      trap("SIGINT") { got_sig("SIGINT") }
-      trap("SIGTERM") { got_sig("SIGTERM") }
-      trap("SIGHUP") { got_sig("SIGHUP", :restart) }
-      trap("SIGUSR1") { got_sig("SIGUSR1", :reconnect) }
+      %w(SIGINT SIGTERM SIGHUP SIGUSR1).each do |sig|
+        trap(sig) { Thread.new { handle_signal sig } }
+      end
     rescue ArgumentError => e
       debug "failed to trap signals (#{e.pretty_inspect}): running on Windows?"
     rescue Exception => e
@@ -987,11 +1029,9 @@ class Bot
       end
 
       connect
-    rescue DBFatal => e
-      fatal "fatal db error: #{e.pretty_inspect}"
-      DBTree.stats
+    rescue SystemExit
       log_session_end
-      exit 2
+      exit 0
     rescue Exception => e
       error e
       will_wait = true
@@ -1070,13 +1110,6 @@ class Bot
           log "Killed by server, extra delay multiplier #{oldtf} -> #{too_fast}"
         end
         retry
-      rescue DBFatal => e
-        fatal "fatal db error: #{e.pretty_inspect}"
-        DBTree.stats
-        # Why restart? DB problems are serious stuff ...
-        # restart("Oops, we seem to have registry problems ...")
-        log_session_end
-        exit 2
       rescue Exception => e
         error "non-net exception: #{e.pretty_inspect}"
         quit_msg = e.to_s
@@ -1111,6 +1144,12 @@ class Bot
     type = ds[:type]
     where = ds[:dest]
     filtered = ds[:text]
+
+    if defined? WebServiceUser and where.instance_of? WebServiceUser
+      debug 'sendmsg to web service!'
+      where.response << filtered
+      return
+    end
 
     # For starters, set up appropriate queue channels and rings
     mchan = opts[:queue_channel]
@@ -1310,14 +1349,16 @@ class Bot
       save
       debug "\tcleaning up ..."
       @save_mutex.synchronize do
-        @plugins.cleanup
+        begin
+          @plugins.cleanup
+        rescue
+          debug "\tignoring cleanup error: #{$!}"
+        end
       end
       # debug "\tstopping timers ..."
       # @timer.stop
       # debug "Closing registries"
       # @registry.close
-      debug "\t\tcleaning up the db environment ..."
-      DBTree.cleanup_env
       log "rbot quit (#{message})"
     end
   end
@@ -1355,21 +1396,26 @@ class Bot
     end
   end
 
-  # call the save method for all of the botmodules
-  def save
+  # call the save method for all or the specified botmodule
+  #
+  # :botmodule ::
+  #   optional botmodule to save
+  def save(botmodule=nil)
     @save_mutex.synchronize do
-      @plugins.save
-      DBTree.cleanup_logs
+      @plugins.save(botmodule)
     end
   end
 
-  # call the rescan method for all of the botmodules
-  def rescan
+  # call the rescan method for all or just the specified botmodule
+  #
+  # :botmodule ::
+  #   instance of the botmodule to rescan
+  def rescan(botmodule=nil)
     debug "\tstopping timer..."
     @timer.stop
     @save_mutex.synchronize do
-      @lang.rescan
-      @plugins.rescan
+      # @lang.rescan
+      @plugins.rescan(botmodule)
     end
     @timer.start
   end

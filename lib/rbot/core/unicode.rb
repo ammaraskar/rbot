@@ -1,95 +1,56 @@
-#-- vim:sw=4:et
+#-- vim:sw=2:et
 #++
 #
 # :title: Unicode plugin
-#
-# Author:: jsn (Dmitry Kim) <dmitry dot kim at gmail dot org>
-#
-# This plugin adds unicode-awareness to rbot. When it's loaded, all the
-# character strings inside of rbot are assumed to be in proper utf-8
-# encoding. The plugin takes care of translation to/from utf-8 on server IO,
-# if necessary (translation charsets are configurable).
-
-# TODO autoconfigure using server-provided allowed charset when these are
-# available, see also comment in irc.rb
-
-require 'iconv'
+# To set the encoding of strings coming from the irc server.
 
 class UnicodePlugin < CoreBotModule
-    Config.register Config::BooleanValue.new(
-    'encoding.enable', :default => true,
+  Config.register Config::BooleanValue.new('encoding.enable',
+    :default => true,
     :desc => "Support for non-ascii charsets",
     :on_change => Proc.new { |bot, v| reconfigure_filter(bot) })
 
-    Config.register Config::ArrayValue.new(
-    'encoding.charsets', :default => ['utf-8', 'cp1252', 'iso-8859-15'],
-    :desc => "Ordered list of iconv(3) charsets the bot should try",
-    :validate_item => Proc.new { |x| !!(Iconv.new('utf-8', x) rescue nil) },
+  Config.register Config::StringValue.new('encoding.charset',
+    :default => 'utf-8',
+    :desc => 'Server encoding.',
     :on_change => Proc.new { |bot, v| reconfigure_filter(bot) })
 
-    class UnicodeFilter
-        def initialize(oenc, *iencs)
-            o = oenc.dup
-            o += '//ignore' if !o.include?('/')
-            i = iencs[0].dup
-            # i += '//ignore' if !i.include?('/')
-            @iencs = iencs.dup
-            @iconvs = @iencs.map { |_| Iconv.new('utf-8', _) }
-            debug "*** o = #{o}, i = #{i}, iencs = #{iencs.inspect}"
-            @default_in = Iconv.new('utf-8//ignore', i)
-            @default_out = Iconv.new(o, 'utf-8//ignore')
-        end
-
-        def in(data)
-            rv = nil
-            @iconvs.each_with_index { |ic, idx|
-                begin
-                    debug "trying #{@iencs[idx]}"
-                    rv = ic.iconv(data)
-                    break
-                rescue
-                end
-            }
-
-            rv = @default_in.iconv(data) if !rv
-            debug ">> #{rv.inspect}"
-            return rv
-        end
-
-        def out(data)
-            rv = @default_out.iconv(data) rescue data # XXX: yeah, i know :/
-            debug "<< #{rv}"
-            rv
-        end
+  class UnicodeFilter
+    def initialize(charset)
+      @charset = charset
     end
 
-
-    def initialize(*a)
-        super
-        @@old_kcode = $KCODE
-        self.class.reconfigure_filter(@bot)
+    def in(data)
+      data.force_encoding @charset if data
+      data.encode('UTF-16le', :invalid => :replace, :replace => '').encode('UTF-8')
     end
 
-    def cleanup
-        debug "cleaning up encodings"
-        @bot.socket.filter = nil
-        $KCODE = @@old_kcode
-        super
+    def out(data)
+      data
     end
+  end
 
-    def UnicodePlugin.reconfigure_filter(bot)
-        debug "configuring encodings"
-        enable = bot.config['encoding.enable']
-        if not enable
-            bot.socket.filter = nil
-            $KCODE = @@old_kcode
-            return
-        end
-        charsets = bot.config['encoding.charsets']
-        charsets = ['utf-8'] if charsets.empty?
-        bot.socket.filter = UnicodeFilter.new(charsets[0], *charsets)
-        $KCODE = 'u'
+
+  def initialize(*a)
+    super
+    self.class.reconfigure_filter(@bot)
+  end
+
+  def cleanup
+    debug "cleaning up encodings"
+    @bot.socket.filter = nil
+    super
+  end
+
+  def UnicodePlugin.reconfigure_filter(bot)
+    debug "configuring encodings"
+    charset = bot.config['encoding.charset']
+    if bot.config['encoding.enable']
+      bot.socket.filter = UnicodeFilter.new charset
+    else
+      bot.socket.filter = nil
     end
+  end
 end
 
 UnicodePlugin.new

@@ -1,0 +1,364 @@
+#!/usr/bin/env ruby
+#-- vim:sw=2:et
+#++
+#
+# :title: RBot Registry Backup, Restore and Migration Script.
+#
+# You can use this script to,
+#   - backup the rbot registry in a format that is platform/engine independent
+#   - restore these backups in supported formats (dbm, daybreak)
+#   - migrate old rbot registries bdb (ruby 1.8) and tokyocabinet.
+#
+# For more information, just execute the script without any arguments!
+#
+# Author:: apoc (Matthias Hecker) <apoc@geekosphere.org>
+# Copyright:: (C) 2014 Matthias Hecker
+# License:: GPLv3
+
+begin; require 'rubygems'; rescue Exception; end
+
+# load registry formats:
+begin; require 'bdb'; rescue Exception; end
+begin; require 'tokyocabinet'; rescue Exception; end
+begin; require 'dbm'; rescue Exception; end
+begin; require 'daybreak'; rescue Exception; end
+begin; require 'sqlite3'; rescue Exception; end
+
+puts 'RBot Registry Backup/Restore/Migrate'
+puts '[%s]' % ['Ruby: ' + RUBY_VERSION,
+               'DBM: ' + (DBM::VERSION rescue '-'),
+               'BDB: ' + (BDB::VERSION rescue '-'),
+               'TokyoCabinet: ' + (TokyoCabinet::VERSION rescue '-'),
+               'Daybreak: ' + (Daybreak::VERSION rescue '-'),
+               'SQLite: ' + (SQLite3::VERSION rescue '-'),
+              ].join(' | ')
+
+require 'date'
+require 'optparse'
+
+TYPES = [:bdb, :tc, :dbm, :daybreak, :sqlite]
+options = {
+  :profile => '~/.rbot',
+  :registry => nil,
+  :dbfile => './%s.rbot' % DateTime.now.strftime('backup_%Y-%m-%d_%H%M%S'),
+  :type => nil
+}
+opt_parser = OptionParser.new do |opt|
+  opt.banner = 'Usage: rbotdb COMMAND [OPTIONS]'
+  opt.separator ''
+  opt.separator 'Commands:'
+  opt.separator '     backup: store rbot registry platform-independently in a file.'
+  opt.separator '     restore: restore rbot registry from such a file.'
+  opt.separator ''
+  opt.separator 'Options:'
+
+  opt.on('-t', '--type TYPE', TYPES, 'format to backup/restore. Values: %s.' % [TYPES.join(', ')]) do |type|
+    options[:type] = type
+  end
+
+  opt.on('-p', '--profile [PROFILE]', 'rbot profile directory. Defaults to: %s.' % options[:profile]) do |profile|
+    options[:profile] = profile
+  end
+
+  opt.on('-r', '--registry [REGISTRY]', 'registry-path to read/write, Optional, defaults to: <PROFILE>/registry_<TYPE>.') do |profile|
+    options[:registry] = profile
+  end
+
+  opt.on('-f', '--file [DBFILE]', 'cross-platform file to backup to/restore from. Defaults to: %s.' % options[:dbfile]) do |dbfile|
+    options[:dbfile] = dbfile
+  end
+
+  opt.separator ''
+end
+
+class BackupRegistry
+  def initialize(profile, type, registry)
+    @profile = File.expand_path profile
+    @type = type
+    @registry = registry
+    puts 'Using type=%s profile=%s registry=%s' % [@type, @profile, @registry.inspect]
+  end
+
+  # returns a hash with the complete registry data
+  def backup
+    listings = search
+    puts 'Found registry types: bdb=%d tc=%d dbm=%d daybreak=%d sqlite=%d' % [
+      listings[:bdb].length, listings[:tc].length,
+      listings[:dbm].length, listings[:daybreak].length, listings[:sqlite].length
+    ]
+    if listings[@type].empty?
+      puts 'No suitable registry found!'
+      exit
+    end
+    puts 'Using registry type: %s' % @type
+    read(listings[@type])
+  end
+
+  def read(listing)
+    print "~Reading... (this might take a moment)\r"
+    data = {}
+    count = 0
+    listing.each do |file|
+      begin
+        data[file.key] = case @type
+        when :tc
+          read_tc(file)
+        when :bdb
+          read_bdb(file)
+        when :dbm
+          read_dbm(file)
+        when :daybreak
+          read_daybreak(file)
+        when :sqlite
+          read_sqlite(file)
+        end
+        count += data[file.key].length
+      rescue
+        puts 'ERROR: <%s> %s' % [$!.class, $!]
+        puts $@.join("\n")
+        puts 'Keep in mind that, even minor version differences of'
+        puts 'Barkeley DB or Tokyocabinet make files unreadable. Use this'
+        puts 'script on the exact same platform rbot was running!'
+        exit
+      end
+    end
+    puts 'Read %d registry files, with %d entries.' % [data.length, count]
+    data
+  end
+
+  def read_bdb(file)
+    data = {}
+    begin
+      db = BDB::Hash.open(file.abs, nil, 'r')
+    rescue BDB::Fatal
+      db = BDB::Btree.open(file.abs, nil, 'r')
+    end
+    db.each do |key, value|
+      data[key] = value
+    end
+    db.close
+    data
+  end
+
+  def read_tc(file)
+    data = {}
+    db = TokyoCabinet::BDB.new
+    db.open(file.abs, TokyoCabinet::BDB::OREADER)
+    db.each do |key, value|
+      data[key] = value
+    end
+    db.close
+    data
+  end
+
+  def read_dbm(file)
+    db = DBM.open(file.abs.gsub(/\.[^\.]+$/,''), 0666, DBM::READER)
+    data = db.to_hash
+    db.close
+    data
+  end
+
+  def read_daybreak(file)
+    data = {}
+    db = Daybreak::DB.new(file.abs)
+    db.each do |key, value|
+      data[key] = value
+    end
+    db.close
+    data
+  end
+
+  def read_sqlite(file)
+    data = {}
+    db = SQLite3::Database.new(file.abs)
+    res = db.execute('SELECT key, value FROM data')
+    res.each do |row|
+      key, value = row
+      data[key] = value
+    end
+    db.close
+    data
+  end
+
+  # searches in profile directory for existing registry formats
+  def search
+    {
+      :bdb => list(get_registry, '*.db'),
+      :tc => list(get_registry('_tc'), '*.tdb'),
+      :dbm => list(get_registry('_dbm'), '*.*'),
+      :daybreak => list(get_registry('_daybreak'), '*.db'),
+      :sqlite => list(get_registry('_sqlite'), '*.db'),
+    }
+  end
+
+  def get_registry(suffix='')
+    if @registry
+      File.expand_path(@registry)
+    else
+      File.join(@profile, 'registry'+suffix)
+    end
+  end
+
+  class RegistryFile
+    def initialize(folder, name)
+      @folder = folder
+      @name = name
+      @key = name.gsub(/\.[^\.]+$/,'')
+    end
+    attr_reader :folder, :name, :key
+    def abs
+      File.expand_path(File.join(@folder, @name))
+    end
+    def ext
+      File.extname(@name)
+    end
+  end
+
+  def list(folder, ext='*.db')
+    return [] if not File.directory? folder
+    Dir.chdir(folder) do
+      Dir.glob(File.join('**', ext)).map do |name|
+        RegistryFile.new(folder, name) if File.exists?(name)
+      end
+    end
+  end
+end
+
+class RestoreRegistry
+  def initialize(profile, type, registry)
+    @profile = File.expand_path profile
+    @registry = registry ? File.expand_path(registry) : nil
+    @type = type
+    puts 'Using type=%s profile=%s' % [@type, @profile]
+  end
+
+  def restore(data)
+    puts 'Using registry type: %s' % @type
+    folder = create_folder
+    print "~Restoring... (this might take a moment)\r"
+    data.each do |file, hash|
+      file = File.join(folder, file)
+      create_subdir(file)
+      case @type
+      when :dbm
+        write_dbm(file, hash)
+      when :tc
+        write_tc(file, hash)
+      when :daybreak
+        write_daybreak(file, hash)
+      when :sqlite
+        write_sqlite(file, hash)
+      end
+    end
+    puts  'Restore successful!                        '
+  end
+
+  def write_dbm(file, data)
+    db = DBM.open(file, 0666, DBM::WRCREAT)
+    data.each_pair do |key, value|
+      db[key] = value
+    end
+    db.close
+  end
+
+  def write_tc(file, data)
+    db = TokyoCabinet::BDB.new
+    db.open(file + '.tdb',
+          TokyoCabinet::BDB::OREADER | 
+          TokyoCabinet::BDB::OCREAT | 
+          TokyoCabinet::BDB::OWRITER)
+    data.each_pair do |key, value|
+      db[key] = value
+    end
+    db.optimize
+    db.close
+  end
+
+  def write_daybreak(file, data)
+    db = Daybreak::DB.new(file + '.db')
+    data.each_pair do |key, value|
+      db[key] = value
+    end
+    db.close
+  end
+
+  def write_sqlite(file, data)
+    db = SQLite3::Database.new(file + '.db')
+    db.execute('CREATE TABLE data (key PRIMARY_KEY, value)')
+    data.each_pair do |key, value|
+      db.execute('INSERT INTO data VALUES (?, ?)', 
+            key, value)
+    end
+    db.close
+  end
+
+  def create_folder
+    Dir.mkdir(@profile) unless File.directory?(@profile)
+    if @registry
+      folder = @registry
+    else
+      folder = File.join(@profile, 'registry_%s' % [@type.to_s])
+    end
+    Dir.mkdir(folder) unless File.directory?(folder)
+    if File.directory?(folder) and Dir.glob(File.join(folder, '**')).select{|f|File.file? f}.length>0
+      puts 'ERROR: Unable to restore!'
+      puts 'Restore folder exists and is not empty: ' + folder
+      exit
+    end
+    folder
+  end
+
+  # used to create subregistry folders
+  def create_subdir(path)
+    dirs = File.dirname(path).split('/')
+    dirs.length.times { |i|
+      dir = dirs[0,i+1].join("/")+"/"
+      unless File.exist?(dir)
+        Dir.mkdir(dir)
+      end
+    }
+  end
+end
+
+opt_parser.parse!
+if ARGV.length > 0 and options[:type].nil?
+  puts opt_parser
+  puts 'Missing Argument: -t [type]'
+  exit
+end
+
+case ARGV[0]
+when 'backup'
+  if File.exists? options[:dbfile]
+    puts 'Backup file already exists.'
+    exit 
+  end
+
+  reg = BackupRegistry.new(options[:profile], options[:type], options[:registry])
+
+  data = reg.backup
+
+  if not data.empty?
+    File.open(options[:dbfile], 'w') do |f|
+      f.write(Marshal.dump(data))
+    end
+    puts 'Written registry to ' + options[:dbfile]
+  end
+
+when 'restore'
+  unless File.exists? options[:dbfile]
+    puts 'Backup file does not exist.'
+    exit 
+  end
+
+  reg = RestoreRegistry.new(options[:profile], options[:type], options[:registry])
+  data = Marshal.load File.read(options[:dbfile])
+
+  puts 'Read %d registry files from backup file.' % data.length
+  reg.restore data
+
+else
+  puts opt_parser
+
+end
+

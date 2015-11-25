@@ -1,5 +1,5 @@
 require 'rake'
-require 'rake/gempackagetask'
+require 'rubygems/package_task'
 
 task :default => [:buildext]
 
@@ -7,7 +7,7 @@ rule '.1' => ['.xml'] do |t|
   sh "xsltproc -nonet -o #{t.name} /usr/share/sgml/docbook/stylesheet/xsl/nwalsh/manpages/docbook.xsl #{t.source}"
 end
 
-task :manpages => ['man/rbot.1', 'man/rbot-remote.1']
+task :manpages => ['man/rbot.1']
 
 SPECFILE = 'rbot.gemspec'
 # The Rakefile is also used after installing the gem, to build
@@ -15,7 +15,7 @@ SPECFILE = 'rbot.gemspec'
 # we must (and can) skip defining the gem packaging tasks.
 if File.exist? SPECFILE
   spec = eval(File.read(SPECFILE), nil, SPECFILE)
-  Rake::GemPackageTask.new(spec) do |pkg|
+  Gem::PackageTask.new(spec) do |pkg|
     pkg.need_zip = true
     pkg.need_tar = true
   end

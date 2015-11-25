@@ -4,6 +4,7 @@
 # :title: rbot plugin management
 
 require 'singleton'
+require_relative './core/utils/where_is.rb'
 
 module Irc
 class Bot
@@ -187,7 +188,7 @@ module Plugins
       @botmodule_triggers = Array.new
 
       @handler = MessageMapper.new(self)
-      @registry = Registry::Accessor.new(@bot, self.class.to_s.gsub(/^.*::/, ""))
+      @registry = @bot.registry_factory.create(@bot.path, self.class.to_s.gsub(/^.*::/, ''))
 
       @manager.add_botmodule(self)
       if self.respond_to?('set_language')
@@ -459,13 +460,31 @@ module Plugins
     end
 
     # Reset lists of botmodules
-    def reset_botmodule_lists
-      @botmodules[:CoreBotModule].clear
-      @botmodules[:Plugin].clear
-      @names_hash.clear
-      @commandmappers.clear
-      @maps.clear
-      @failures_shown = false
+    #
+    # :botmodule ::
+    #   optional instance of a botmodule to remove from the lists
+    def reset_botmodule_lists(botmodule=nil)
+      if botmodule
+        # deletes only references of the botmodule
+        @botmodules[:CoreBotModule].delete botmodule
+        @botmodules[:Plugin].delete botmodule
+        @names_hash.delete_if {|key, value| value == botmodule}
+        @commandmappers.delete_if {|key, value| value[:botmodule] == botmodule }
+        @delegate_list.each_pair { |cmd, list|
+          list.delete botmodule
+        }
+        @delegate_list.delete_if {|key, value| value.empty?}
+        @maps.delete_if {|key, value| value[:botmodule] == botmodule }
+        @failures_shown = false
+      else
+        @botmodules[:CoreBotModule].clear
+        @botmodules[:Plugin].clear
+        @names_hash.clear
+        @commandmappers.clear
+        @delegate_list.clear
+        @maps.clear
+        @failures_shown = false
+      end
       mark_priorities_dirty
     end
 
@@ -477,7 +496,14 @@ module Plugins
 
     # Returns the botmodule with the given _name_
     def [](name)
+      return if not name
       @names_hash[name.to_sym]
+    end
+
+    # Returns +true+ if a botmodule named _name_ exists.
+    def has_key?(name)
+      return if not name
+      @names_hash.has_key?(name.to_sym)
     end
 
     # Returns +true+ if _cmd_ has already been registered as a command
@@ -518,6 +544,11 @@ module Plugins
       end
       @botmodules[kl] << botmodule
       @names_hash[botmodule.to_sym] = botmodule
+      # add itself to the delegate list for the fast-delegation
+      # of methods like cleanup or privmsg, etc..
+      botmodule.methods.grep(DEFAULT_DELEGATE_PATTERNS).each { |m|
+        @delegate_list[m.intern] << botmodule
+      }
       mark_priorities_dirty
     end
 
@@ -551,7 +582,8 @@ module Plugins
     # This method is the one that actually loads a module from the
     # file _fname_
     #
-    # _desc_ is a simple description of what we are loading (plugin/botmodule/whatever)
+    # _desc_ is a simple description of what we are loading
+    # (plugin/botmodule/whatever) for error reporting
     #
     # It returns the Symbol :loaded on success, and an Exception
     # on failure
@@ -561,6 +593,7 @@ module Plugins
       # the idea here is to prevent namespace pollution. perhaps there
       # is another way?
       plugin_module = Module.new
+      
       # each plugin uses its own textdomain, we bind it automatically here
       bindtextdomain_to(plugin_module, "rbot-#{File.basename(fname, '.rb')}")
 
@@ -570,10 +603,10 @@ module Plugins
         plugin_string = IO.read(fname)
         debug "loading #{desc}#{fname}"
         plugin_module.module_eval(plugin_string, fname)
+
         return :loaded
       rescue Exception => err
         # rescue TimeoutError, StandardError, NameError, LoadError, SyntaxError => err
-        raise if err.kind_of? DBFatal
         error report_error("#{desc}#{fname} load failed", err)
         bt = err.backtrace.select { |line|
           line.match(/^(\(eval\)|#{fname}):\d+/)
@@ -586,9 +619,10 @@ module Plugins
         msg = err.to_s.gsub(/^\(eval\)(:\d+)(:in `.*')?(:.*)?/) { |m|
           "#{fname}#{$1}#{$3}"
         }
+        msg.gsub!(fname, File.basename(fname))
         begin
           newerr = err.class.new(msg)
-        rescue ArgumentError => err_in_err
+        rescue ArgumentError => aerr_in_err
           # Somebody should hang the ActiveSupport developers by their balls
           # with barbed wire. Their MissingSourceFile extension to LoadError
           # _expects_ a second argument, breaking the usual Exception interface
@@ -601,7 +635,15 @@ module Plugins
           if err.class.respond_to? :from_message
             newerr = err.class.from_message(msg)
           else
-            raise err_in_err
+            raise aerr_in_err
+          end
+        rescue NoMethodError => nmerr_in_err
+          # Another braindead extension to StandardError, OAuth2::Error,
+          # doesn't get a string as message, but a response
+          if err.respond_to? :response
+            newerr = err.class.new(err.response)
+          else
+            raise nmerr_in_err
           end
         end
         newerr.set_backtrace(bt)
@@ -678,7 +720,13 @@ module Plugins
             end
           end
 
-          did_it = load_botmodule_file("#{dir}/#{file}", "plugin")
+          begin
+            did_it = load_botmodule_file("#{dir}/#{file}", "plugin")
+          rescue Exception => e
+            error e
+            did_it = e
+          end
+
           case did_it
           when Symbol
             processed[file.intern] = did_it
@@ -699,32 +747,58 @@ module Plugins
       scan_botmodules(:type => :plugins)
 
       debug "finished loading plugins: #{status(true)}"
-      (core_modules + plugins).each { |p|
-       p.methods.grep(DEFAULT_DELEGATE_PATTERNS).each { |m|
-         @delegate_list[m.intern] << p
-       }
-      }
       mark_priorities_dirty
     end
 
     # call the save method for each active plugin
-    def save
-      delegate 'flush_registry'
-      delegate 'save'
+    #
+    # :botmodule ::
+    #   optional instance of a botmodule to save
+    def save(botmodule=nil)
+      if botmodule
+        botmodule.flush_registry
+        botmodule.save if botmodule.respond_to? 'save'
+      else
+        delegate 'flush_registry'
+        delegate 'save'
+      end
     end
 
     # call the cleanup method for each active plugin
-    def cleanup
-      delegate 'cleanup'
-      reset_botmodule_lists
+    #
+    # :botmodule ::
+    #   optional instance of a botmodule to cleanup
+    def cleanup(botmodule=nil)
+      if botmodule
+        botmodule.cleanup
+      else
+        delegate 'cleanup'
+      end
+      reset_botmodule_lists(botmodule)
     end
 
-    # drop all plugins and rescan plugins on disk
-    # calls save and cleanup for each plugin before dropping them
-    def rescan
-      save
-      cleanup
-      scan
+    # drops botmodules and rescan botmodules on disk
+    # calls save and cleanup for each botmodule before dropping them
+    # a optional _botmodule_ argument might specify a botmodule 
+    # instance that should be reloaded
+    #
+    # :botmodule ::
+    #   instance of the botmodule to rescan
+    def rescan(botmodule=nil)
+      save(botmodule)
+      cleanup(botmodule)
+      if botmodule
+        @failed.clear
+        @ignored.clear
+        filename = where_is(botmodule.class)
+        err = load_botmodule_file(filename, "plugin")
+        if err.is_a? Exception
+          @failed << { :name => botmodule.to_s,
+                       :dir => File.dirname(filename), :reason => err }
+        end
+      else
+        scan
+      end
     end
 
     def status(short=false)
@@ -787,6 +861,20 @@ module Plugins
         end
       end
       output.join '; '
+    end
+
+    # returns the last logged failure (if present) of a botmodule
+    #
+    # :name ::
+    #   name of the botmodule
+    def botmodule_failure(name)
+      failure = @failed.find { |f| f[:name] == name }
+      if failure
+        "%{exception}: %{reason}" % {
+          :exception => failure[:reason].class,
+          :reason => failure[:reason]
+        }
+      end
     end
 
     # return list of help topics (plugin names)
@@ -876,8 +964,7 @@ module Plugins
       end
     end
 
-    # call-seq: delegate</span><span class="method-args">(method, m, opts={})</span>
-    # <span class="method-name">delegate</span><span class="method-args">(method, opts={})
+    # delegate(method, [m,] opts={})
     #
     # see if each plugin handles _method_, and if so, call it, passing
     # _m_ as a parameter (if present). BotModules are called in order of
@@ -942,7 +1029,6 @@ module Plugins
           rescue Exception => err
             raise if err.kind_of?(SystemExit)
             error report_error("#{p.botmodule_class} #{p.name} #{method}() failed:", err)
-            raise if err.kind_of?(DBFatal)
           end
         }
       else
@@ -958,7 +1044,6 @@ module Plugins
             rescue Exception => err
               raise if err.kind_of?(SystemExit)
               error report_error("#{p.botmodule_class} #{p.name} #{method}() failed:", err)
-              raise if err.kind_of?(DBFatal)
             end
           end
         }
@@ -988,7 +1073,6 @@ module Plugins
             rescue Exception => err
               raise if err.kind_of?(SystemExit)
               error report_error("#{p.botmodule_class} #{p.name} privmsg() failed:", err)
-              raise if err.kind_of?(DBFatal)
             end
             debug "Successfully delegated #{m.inspect}"
             return true

@@ -245,9 +245,9 @@ class Bot
       return false if @templates.empty?
       failures = []
       @templates.each do |tmpl|
-        options = tmpl.recognize(m)
-        if options.kind_of? Failure
-          failures << options
+        params = tmpl.recognize(m)
+        if params.kind_of? Failure
+          failures << params
         else
           action = tmpl.options[:action]
           unless @parent.respond_to?(action)
@@ -257,8 +257,12 @@ class Bot
           auth = tmpl.options[:full_auth_path]
           debug "checking auth for #{auth}"
           if m.bot.auth.allow?(auth, m.source, m.replyto)
-            debug "template match found and auth'd: #{action.inspect} #{options.inspect}"
-            if !m.in_thread && (tmpl.options[:thread] || tmpl.options[:threaded])
+            debug "template match found and auth'd: #{action.inspect} #{params.inspect}"
+            if !m.in_thread and (tmpl.options[:thread] or tmpl.options[:threaded]) and
+                (defined? WebServiceUser and not m.source.instance_of? WebServiceUser)
+              # Web service: requests are handled threaded anyway and we want to 
+              # wait for the responses.
+
               # since the message action is in a separate thread, the message may be
               # delegated to unreplied() before the thread has a chance to actually
               # mark it as replied. since threading is used mostly for commands that
@@ -267,14 +271,14 @@ class Bot
               m.replied = true
               Thread.new do
                 begin
-                  @parent.send(action, m, options)
+                  @parent.send(action, m, params)
                 rescue Exception => e
                   error "In threaded action: #{e.message}"
                   debug e.backtrace.join("\n")
                 end
               end
             else
-              @parent.send(action, m, options)
+              @parent.send(action, m, params)
             end
 
             return true

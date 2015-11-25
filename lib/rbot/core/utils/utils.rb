@@ -1,3 +1,4 @@
+# encoding: UTF-8
 #-- vim:sw=2:et
 #++
 #
@@ -127,7 +128,7 @@ rescue LoadError
 
         # Some blogging and forum platforms use spans or divs with a 'body' or 'message' or 'text' in their class
         # to mark actual text
-        AFTER_PAR1_REGEX = /<\w+\s+[^>]*(?:body|message|text)[^>]*>.*?<\/?(?:p|div|html|body|table|td|tr)(?:\s+[^>]*)?>/im
+        AFTER_PAR1_REGEX = /<\w+\s+[^>]*(?:body|message|text|post)[^>]*>.*?<\/?(?:p|div|html|body|table|td|tr)(?:\s+[^>]*)?>/im
 
         # At worst, we can try stuff which is comprised between two <br>
         AFTER_PAR2_REGEX = /<br(?:\s+[^>]*)?\/?>.*?<\/?(?:br|p|div|html|body|table|td|tr)(?:\s+[^>]*)?\/?>/im
@@ -198,7 +199,7 @@ module ::Irc
       when 0
         raise "Empty ret array!"
       when 1
-        return ret.to_s
+        return ret[0].to_s
       else
         return [ret[0, ret.length-1].join(", ") , ret[-1]].join(_(" and "))
       end
@@ -355,7 +356,10 @@ module ::Irc
         return str.gsub(/(&(.+?);)/) {
           symbol = $2
           # remove the 0-paddng from unicode integers
-          if symbol =~ /^#(\d+)$/
+          case symbol
+          when /^#x([0-9a-fA-F]+)$/
+            symbol = $1.to_i(16).to_s
+          when /^#(\d+)$/
             symbol = $1.to_i.to_s
           end
 
@@ -493,7 +497,11 @@ module ::Irc
 
     # HTML first par grabber without hpricot
     def Utils.ircify_first_html_par_woh(xml_org, opts={})
-      xml = xml_org.gsub(/<!--.*?-->/m, '').gsub(/<script(?:\s+[^>]*)?>.*?<\/script>/im, "").gsub(/<style(?:\s+[^>]*)?>.*?<\/style>/im, "")
+      xml = xml_org.gsub(/<!--.*?-->/m,
+                         "").gsub(/<script(?:\s+[^>]*)?>.*?<\/script>/im,
+                         "").gsub(/<style(?:\s+[^>]*)?>.*?<\/style>/im,
+                         "").gsub(/<select(?:\s+[^>]*)?>.*?<\/select>/im,
+                         "")
 
       strip = opts[:strip]
       strip = Regexp.new(/^#{Regexp.escape(strip)}/) if strip.kind_of?(String)

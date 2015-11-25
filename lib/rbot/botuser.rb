@@ -35,7 +35,8 @@ class Bot
   module Auth
 
     Config.register Config::StringValue.new( 'auth.password',
-      :default => 'rbotauth', :wizard => true,
+      :default => [*?a..?z,*?A..?Z,*?0..?9].sample(8).join, :store_default => true,
+      :wizard => true,
       :on_change => Proc.new {|bot, v| bot.auth.botowner.password = v},
       :desc => _('Password for the bot owner'))
     Config.register Config::BooleanValue.new( 'auth.login_by_mask',
@@ -872,7 +873,7 @@ class Bot
         if user.class <= BotUser
           botuser = user
         else
-          botuser = irc_to_botuser(user)
+          botuser = user.botuser
         end
         cmd = cmdtxt.to_irc_auth_command
 

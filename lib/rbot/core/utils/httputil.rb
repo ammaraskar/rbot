@@ -1,3 +1,4 @@
+# encoding: UTF-8
 #-- vim:sw=2:et
 #++
 #
@@ -10,7 +11,7 @@
 require 'resolv'
 require 'net/http'
 require 'cgi'
-require 'iconv'
+
 begin
   require 'net/https'
 rescue LoadError => e
@@ -43,13 +44,15 @@ module ::Net
       ctype = self['content-type'] || 'text/html'
       return nil unless ctype =~ /^text/i || ctype =~ /x(ht)?ml/i
 
-      charsets = ['latin1'] # should be in config
+      charsets = ['ISO-8859-1'] # should be in config
 
       if ctype.match(/charset=["']?([^\s"']+)["']?/i)
         charsets << $1
         debug "charset #{charsets.last} added from header"
       end
 
+      # str might be invalid utf-8 that will crash on the pattern match:
+      str.encode!('UTF-8', 'UTF-8', :invalid => :replace)
       case str
       when /<\?xml\s[^>]*encoding=['"]([^\s"'>]+)["'][^>]*\?>/i
         charsets << $1
@@ -68,20 +71,20 @@ module ::Net
       charsets = self.body_charset(str) or return str
 
       charsets.reverse_each do |charset|
-        # XXX: this one is really ugly, but i don't know how to make it better
-        #  -jsn
-
-        0.upto(5) do |off|
-          begin
-            debug "trying #{charset} / offset #{off}"
-            return Iconv.iconv('utf-8//ignore',
-                               charset,
-                               str.slice(0 .. (-1 - off))).first
-          rescue
-            debug "conversion failed for #{charset} / offset #{off}"
+        begin
+          debug "try decoding using #{charset}"
+          str.force_encoding(charset)
+          tmp = str.encode('UTF-16le', :invalid => :replace, :replace => '').encode('UTF-8')
+          if tmp
+            str = tmp
+            break
           end
+        rescue
+          error 'failed to use encoding'
+          error $!
         end
       end
+
       return str
     end
 
@@ -98,7 +101,8 @@ module ::Net
           # If we can't unpack the whole stream (e.g. because we're doing a
           # partial read
           debug "full gunzipping failed (#{e}), trying to recover as much as possible"
-          ret = ""
+          ret = ''
+          ret.force_encoding(Encoding::ASCII_8BIT)
           begin
             Zlib::GzipReader.new(StringIO.new(str)).each_byte { |byte|
               ret << byte
@@ -122,7 +126,7 @@ module ::Net
       when /^(?:iso-8859-\d+|windows-\d+|utf-8|utf8)$/i
         # B0rked servers (Freshmeat being one of them) sometimes return the charset
         # in the content-encoding; in this case we assume that the document has
-        # a standarc content-encoding
+        # a standard content-encoding
         old_hsh = self.to_hash
         self['content-type']= self['content-type']+"; charset="+method.downcase
         warning "Charset vs content-encoding confusion, trying to recover: from\n#{old_hsh.pretty_inspect}to\n#{self.to_hash.pretty_inspect}"

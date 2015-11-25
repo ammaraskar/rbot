@@ -118,6 +118,18 @@ class PollPlugin < Plugin
     init_reg_entry :running, Hash.new
     init_reg_entry :archives, Hash.new
     init_reg_entry :last_poll_id, 0
+    running = @registry[:running]
+    now = Time.now
+    running.each do |id, poll|
+      duration = poll.ends_at - Time.now
+      if duration > 0
+        # keep the poll running
+        @bot.timer.add_once(duration) { count_votes(poll.id) }
+      else
+        # the poll expired while the bot was out, end it
+        count_votes(poll.id)
+      end
+    end
   end
 
   def authors_running_count(victim)
@@ -224,7 +236,9 @@ class PollPlugin < Plugin
     return if poll == nil
     poll.stop!
 
-    @bot.say(poll.channel, _("let's find the answer to: %{q}") % {
+    dest = poll.channel ? poll.channel : poll.author
+
+    @bot.say(dest, _("let's find the answer to: %{q}") % {
       :q => "#{Bold}#{poll.question}#{Bold}"
     })
 
@@ -256,7 +270,7 @@ class PollPlugin < Plugin
       end
     end
 
-    @bot.say poll.channel, poll.outcome
+    @bot.say dest, poll.outcome
 
     # Now that we're done, move it to the archives
     archives = @registry[:archives]
@@ -313,7 +327,7 @@ class PollPlugin < Plugin
       return
     end
 
-    to_reply = _("poll #%{id} was asked by %{bold}%{author}%{bold} in %{bold}%{channel}%{bold} %{started}.")
+    to_reply = _("poll #%{id} was asked by %{bold}%{author}%{bold} in %{bold}%{channel}%{bold} %{started}.").dup
     options = ''
     outcome = ''
     if poll.running
@@ -321,7 +335,7 @@ class PollPlugin < Plugin
       if poll.voters.has_key? m.sourcenick
         to_reply << _(" Be patient, it'll end %{end}")
       else
-        to_reply << _(" You have until %{poll.ends_at} to vote if you haven't!")
+        to_reply << _(" You have until %{end} to vote if you haven't!")
         options << " #{poll.options}"
       end
     else
@@ -330,7 +344,8 @@ class PollPlugin < Plugin
 
     m.reply((to_reply % {
       :bold => Bold,
-      :id => poll.id, :author => poll.author, :channel => poll.channel,
+      :id => poll.id, :author => poll.author,
+      :channel => (poll.channel ? poll.channel : _("private")),
       :started => poll.started,
       :end => poll.ends_at
     }) + options + outcome)
